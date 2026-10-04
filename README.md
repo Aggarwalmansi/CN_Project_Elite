@@ -2,8 +2,8 @@
 
 ## Team Members
 
-- **Mansi Agarwal**
-- **Tanisha Dhiman**
+- **Mansi Agarwal** - 2401010264
+- **Tanisha Dhiman** - 2401010475
 
 ## Project Overview
 
