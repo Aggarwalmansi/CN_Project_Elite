@@ -78,5 +78,9 @@ The wrong DNS server case is in `P2-A-backup-dns/01-…png` (`SERVER: 8.8.8.8`, 
 ### `P2-captures/` — Wireshark (Phase 2)
 | File | Shows |
 |---|---|
-| `phase2-dns-tcp-tls.pcapng` | Mac 1 ↔ Mac 2 only: DNS `A app.team1.test` → `10.7.19.91`, TCP handshake to 8443, TLS 1.3 Client Hello (SNI `app.team1.test`, ALPN `h2`) / Server Hello |
-| `01-dns.png` · `02-tcp-handshake.png` · `03-tls-client-hello.png` · `04-tls-server-hello.png` | Screenshots of the capture |
+| `01-dns-query-response.jpeg` | Pkt 2379/2380: Mac 1 → Mac 2 `A app.team1.test`; response `addr 10.7.19.91`, `No error`, 6.8 ms |
+| `02-tcp-handshake-syn.jpeg` | Pkt 2382–2384: `SYN` (ECE, CWR) → `SYN, ACK` (ECE) → `ACK` on port 8443; IP/TCP headers expanded (TTL 64, DF, MSS 1460) |
+| `03-tls-client-hello-sni-alpn.jpeg` | Pkt 2385: Client Hello — `server_name=app.team1.test` (SNI, clear text), `supported_versions` TLS 1.3…1.0, ALPN `h2`, `http/1.1` |
+| `04-tls-server-hello-tls13.jpeg` | Pkt 2387: Server Hello — `TLS_CHACHA20_POLY1305_SHA256`, `supported_versions` → **TLS 1.3 (0x0304)**; certificate follows inside encrypted Application Data |
+
+Display filter: `ip.addr==10.7.2.116 && (dns.qry.name contains "team1" || tcp.port==8443)`. Pkts 1996–1999 show the previous connection's `FIN` → `RST` teardown.
