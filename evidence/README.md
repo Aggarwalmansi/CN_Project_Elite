@@ -59,5 +59,24 @@ Phase 1 folders use the Phase 1 IPs (`10.7.21.182` / `10.7.21.206`).
 |---|---|
 | `01-backup-dns-down-wrong-listen-address.png` | Fault: backup DNS `dig` times out. Diagnosis: dnsmasq not running → config had Mac 1's `listen-address` → fixed by restoring `config/dnsmasq/phase2-mac2-backup.conf` |
 
-## Still to capture
-See the checklist in the Phase 2 report / team notes: A3 cross-machine `dig`, Mac 2 resolver and config screenshots, HTTP/2 check, remaining §6.3 failure cases, and saved `.pcap` files.
+### `P1-failures/` — §6.3 failure scenarios
+| File | Shows |
+|---|---|
+| `02-wrong-dns-record.png` | Record changed to `10.7.19.99` → `dig` returns the wrong IP, `curl` **times out** (no host there) · record reverted → `10.7.19.91`, connection succeeds |
+| `03-both-backends-down-502.png` | Mac 1: Backend A up → `HTTP/2 200`; both backends stopped → **`HTTP/2 502`** from `mac2-primary` |
+| `03b-edge-log-both-refused.png` | Mac 2 edge log: one request (`*317`), both upstreams `Connection refused` (A `10.7.2.116:3001`, B `127.0.0.1:3002`) → 502 |
+| `04-wrong-port.png` | `ping` 10.7.19.91 OK (host up) · `curl :9443` → **Connection refused** (nothing listening) · `:8443` → `200` |
+
+The wrong DNS server case is in `P2-A-backup-dns/01-…png` (`SERVER: 8.8.8.8`, no answer).
+
+### `P2-config/` — Phase 2 configuration proof
+| File | Shows |
+|---|---|
+| `01-mac1-cross-machine-dns-and-servers.png` | Mac 1 `dig @10.7.19.91 app.team1.test` → `NOERROR`, `aa`, `30 IN A 10.7.19.91`, `SERVER: 10.7.19.91#53` — **cross-machine DNS works (closes Phase 1 A3)**; Mac 1 DNS servers `127.0.0.1`, `10.7.19.91` |
+| `02-mac2-resolver-dnsmasq-nginx-http2.png` | Mac 2: `/etc/resolver/team1.test` + `scutil` resolver #8 (primary, then local backup, timeout 2) · backup dnsmasq config (`listen-address=127.0.0.1,10.7.19.91`, `host-record … 30`, `no-hosts`) · nginx upstream (`max_fails=1 fail_timeout=10s`, `proxy_next_upstream_tries 2`, `http2 on`, `X-Edge`) · `curl -v`: TLS 1.3, ALPN `h2`, cert matched, `HTTP/2 200` |
+
+### `P2-captures/` — Wireshark (Phase 2)
+| File | Shows |
+|---|---|
+| `phase2-dns-tcp-tls.pcapng` | Mac 1 ↔ Mac 2 only: DNS `A app.team1.test` → `10.7.19.91`, TCP handshake to 8443, TLS 1.3 Client Hello (SNI `app.team1.test`, ALPN `h2`) / Server Hello |
+| `01-dns.png` · `02-tcp-handshake.png` · `03-tls-client-hello.png` · `04-tls-server-hello.png` | Screenshots of the capture |
