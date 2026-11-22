@@ -78,7 +78,7 @@ nginx terminates TLS and forwards requests to the backend upstream group:
 ```nginx
 upstream backend_servers {
     server 10.7.21.182:3001;
-    server 127.0.0.1:3002;
+    server 10.7.21.206:3002;
 }
 ```
 
@@ -86,16 +86,12 @@ Backend A is on Mac 1 and Backend B is local to Mac 2.
 
 ## Running Backend A — Mac 1
 
-Backend A is located at:
-
-```text
-~/cn-project
-```
+Backend A source is in this repo at `config/backend-a/` (code in `src/server.ts`).
 
 Start it with:
 
 ```bash
-cd ~/cn-project
+cd config/backend-a
 npm install
 npm run build
 npm start
@@ -115,16 +111,12 @@ curl -i http://127.0.0.1:3001/api/status
 
 ## Running Backend B — Mac 2
 
-Backend B is located at:
-
-```text
-~/cn-project/backend-b
-```
+Backend B source is in this repo at `config/backend-b/` (code in `src/server.ts`).
 
 Start it with:
 
 ```bash
-cd ~/cn-project/backend-b
+cd config/backend-b
 npm install
 npm run build
 npm start
@@ -133,8 +125,10 @@ npm start
 Backend B listens on:
 
 ```text
-http://127.0.0.1:3002
+http://0.0.0.0:3002
 ```
+
+nginx reaches it locally; in Phase 2 a pf rule blocks port 3002 from the LAN (see `config/pf/`).
 
 Useful test:
 
@@ -144,11 +138,13 @@ curl -i http://127.0.0.1:3002/api/status
 
 ## Running / Checking dnsmasq — Mac 1
 
-Configuration:
+Configuration (installed copy):
 
 ```text
 /opt/homebrew/etc/dnsmasq.conf
 ```
+
+Repo copies: `config/dnsmasq/phase1-mac1.conf` (Phase 1), `config/dnsmasq/phase2-*.conf` (Phase 2).
 
 Check the relevant configuration:
 
@@ -296,7 +292,7 @@ Requests through nginx continue to return HTTP 200 responses through Backend B.
 Restart Backend A:
 
 ```bash
-cd ~/cn-project
+cd config/backend-a
 npm start
 ```
 
@@ -392,3 +388,22 @@ docs/
 - Backend B uses port `3002`.
 - Private DNS uses port `53`.
 - The university-managed firewall prevented Mac 2 from reaching Mac 1's `dnsmasq` service on port 53 during the cross-machine DNS test. Local Mac 1 DNS resolution was verified successfully, and the limitation is documented in the A3 evidence.
+
+## Configuration Bundle
+
+```text
+config/
+├── backend-a/          Backend A (Express, :3001) — src/server.ts
+├── backend-b/          Backend B (Express, :3002) — src/server.ts
+├── dnsmasq/
+│   ├── phase1-mac1.conf            Phase 1 DNS (address=, TTL 0)
+│   ├── phase2-mac1-primary.conf    Phase 2 primary DNS (host-record, TTL 30)
+│   ├── phase2-mac2-backup.conf     Phase 2 backup DNS on Mac 2 (Extension A)
+│   └── resolver-team1.test         /etc/resolver file for Mac 2
+├── nginx/
+│   ├── phase1-mac2-edge.conf       Phase 1 edge
+│   ├── phase2-mac2-edge.conf       Phase 2 edge: failover, HTTP/2, X-Edge (Extension D)
+│   └── phase2-mac1-standby.conf    Phase 2 standby edge on Mac 1 (Extension E)
+├── pf/                 Backend isolation rules + rollback commands (Extension C)
+└── tls/README.md       Certificate setup, trust and inspection notes
+```

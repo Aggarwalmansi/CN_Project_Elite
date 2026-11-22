@@ -1,0 +1,6 @@
+# /etc/resolver/team1.test on Mac 2 (Tanisha) — applies only to *.team1.test
+# The primary (Mac 1) is listed first; inbound port 53 on Mac 1 is blocked by the
+# managed firewall, so lookups time out and fall through to the local backup.
+nameserver 10.7.21.182
+nameserver 127.0.0.1
+timeout 2
