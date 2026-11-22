@@ -37,4 +37,4 @@ openssl s_client -connect app.team1.test:8443 -servername app.team1.test </dev/n
 
 The standby nginx on Mac 1 uses the **same** `team1.crt` / `team1.key`, copied by AirDrop.
 The certificate is bound to the *name* `app.team1.test`, not to an IP, so it stays valid
-when DNS moves the name from `10.7.21.206` to `10.7.21.182`.
+when DNS moves the name from `10.7.19.91` to `10.7.2.116`.

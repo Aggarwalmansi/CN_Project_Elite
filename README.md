@@ -30,6 +30,10 @@ The system demonstrates:
 
 The active Wi-Fi interface on both Macs is `en0`.
 
+> **Phase 2 addresses:** the DHCP leases changed. Mac 1 (Mansi) is now `10.7.2.116` and Mac 2 (Tanisha) is
+> now `10.7.19.91` (mask `255.255.224.0`, gateway `10.7.0.1`). The Phase 1 sections below keep the old IPs
+> so they match the Phase 1 evidence; all `config/*/phase2-*` files use the new IPs.
+
 ## Architecture
 
 ```text
