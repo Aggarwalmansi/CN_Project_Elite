@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Building and Hardening a Private Web Service on a Two-Mac Network</title>
+<style>
+  @page { size: letter; margin: 0.75in 0.625in 1in 0.625in; }
+  html { font-family: "Times New Roman", Times, serif; font-size: 10pt; color: #000; }
+  body { margin: 0; line-height: 1.18; }
+  .title { text-align: center; font-size: 22pt; line-height: 1.15; margin: 0 0 14pt; font-weight: normal; }
+  .authors { display: flex; justify-content: center; gap: 0.9in; text-align: center; margin-bottom: 18pt; font-size: 10pt; }
+  .authors .name { font-size: 11pt; }
+  .cols { column-count: 2; column-gap: 0.25in; text-align: justify; hyphens: auto; }
+  p { margin: 0 0 0; text-indent: 1em; }
+  p.noindent, .abstract p, .terms p { text-indent: 0; }
+  .abstract, .terms { font-weight: bold; font-size: 9pt; margin-bottom: 6pt; }
+  .abstract i, .terms i { font-weight: bold; }
+  h2 { font-size: 10pt; font-weight: normal; font-variant: small-caps; text-align: center; margin: 10pt 0 4pt; letter-spacing: 0.02em; break-after: avoid; }
+  h3 { font-size: 10pt; font-weight: normal; font-style: italic; margin: 6pt 0 2pt; break-after: avoid; }
+  ol, ul { margin: 2pt 0 2pt 0; padding-left: 1.3em; }
+  li { margin: 0 0 1pt; }
+  code { overflow-wrap: anywhere; font-family: "Courier New", Courier, monospace; font-size: 8.5pt; }
+  table { border-collapse: collapse; width: 100%; font-size: 8pt; margin: 2pt 0 8pt; text-align: left; line-height: 1.12; }
+  th, td { border-top: 0.5pt solid #000; border-bottom: 0.5pt solid #000; padding: 1.5pt 3pt; vertical-align: top; }
+  th { font-weight: bold; }
+  .tcap { text-align: center; font-size: 8pt; font-variant: small-caps; margin-top: 8pt; line-height: 1.25; break-after: avoid; }
+  .tcap .num { display: block; font-variant: normal; letter-spacing: 0.05em; }
+  figure { margin: 6pt 0 8pt; break-inside: avoid; text-align: center; }
+  figure img { max-width: 100%; border: 0.5pt solid #999; }
+  figcaption { font-size: 8pt; text-align: center; margin-top: 3pt; line-height: 1.2; }
+  .top { margin: 0 0 14pt; }
+  .cols { column-fill: balance; }
+  .tblock { break-inside: avoid; }
+  .refs p { text-indent: 0; padding-left: 2.2em; position: relative; font-size: 8pt; margin-bottom: 2pt; text-align: left; }
+  .refs p span { position: absolute; left: 0; }
+</style>
+</head>
+<body>
+
+<h1 class="title">Building and Hardening a Private Web Service on a<br>Two-Mac Network: DNS, HTTPS, Load Balancing and Failover</h1>
+
+<div class="authors">
+  <div><div class="name">Mansi Agarwal</div>Roll No. 2401010264<br>Newton School of Technology<br>Rishihood University</div>
+  <div><div class="name">Tanisha Dhiman</div>Roll No. 2401010475<br>Newton School of Technology<br>Rishihood University</div>
+</div>
+
+<figure class="top">
+<img src="figs/fig-topology.png" style="width:72%">
+<figcaption>Fig. 1. Phase 2 topology. Solid arrows are the normal path; dashed parts are backups. The client finds the edge through DNS, then connects over HTTPS; nginx shares requests between the two backends.</figcaption>
+</figure>
+
+<div class="cols">
+
+<div class="abstract"><p><i>Abstract</i>—We built a small private web service on two MacBooks connected to one campus Wi-Fi network. In Phase 1, one Mac ran a private DNS server and one backend; the other Mac ran an nginx reverse proxy that serves HTTPS on port 8443 and shares requests between two backends. We proved every layer with evidence: DNS, ping, a verified TLS 1.3 certificate, load balancing, HTTP caching with a 304 response, and Wireshark captures of DNS, TCP and TLS. In Phase 2 we made the service keep working when parts fail. We added a backup DNS server, a 30-second DNS TTL, firewall rules that hide the backends, automatic backend failover, and a standby proxy reached by changing one DNS record. Every test passed. The site kept returning HTTP 200 when one DNS server, one backend or the main proxy was removed, and it gave a clear 502 error only when both backends were down. One limit remains: the campus firewall blocks incoming DNS (port 53) on Mac 1.</p></div>
+
+<div class="terms"><p><i>Index Terms</i>—DNS, dnsmasq, TTL, nginx, reverse proxy, load balancing, TLS 1.3, HTTP/2, HTTP caching, high availability, failover, packet filter, Wireshark.</p></div>
+
+<h2>I. Introduction</h2>
+<p>A web service that users reach by name, over an encrypted connection, from more than one server, depends on five protocols working together: DNS finds the server, TCP carries the data, TLS protects it, HTTP carries the request, and a reverse proxy picks a backend. Each part is simple alone. The challenge in this project was to make them work together on two real machines, and to prove each step with evidence [1].</p>
+<p>The project had two phases. Phase 1 built the service and showed that every layer works. Phase 2 asked a harder question: does the service still work when something breaks? For Phase 2 we added six extensions (A to F): a backup DNS server, TTL control, service isolation with a firewall, backend failover, a standby proxy, and layer-by-layer troubleshooting.</p>
+<p>We used the reserved <code>.test</code> domain, so no public DNS or public certificate authority is involved. All configuration files, scripts and evidence are in our GitHub repository [2].</p>
+
+<h2>II. System Architecture</h2>
+<p>Two MacBooks share the network roles (Fig. 1). In Phase 1 each role ran once. In Phase 2 every role except the client has a copy on the other Mac. The client never talks to a backend directly: it resolves the name, connects to nginx, and nginx chooses a backend for each request.</p>
+
+<p>Both Macs use the Wi-Fi interface <code>en0</code>. DHCP gave them new addresses between the phases, so all Phase 2 files use the new IPs; Phase 1 files keep the old IPs to match the Phase 1 evidence. In Phase 2 the subnet mask is 255.255.224.0 (/19) and the gateway is 10.7.0.1.</p>
+
+<div class="tblock">
+<div class="tcap"><span class="num">TABLE I</span>Machines and Roles</div>
+<table>
+<tr><th>Machine</th><th>IP (Phase 1 / 2)</th><th>Roles</th></tr>
+<tr><td>Mac 1 (Mansi)</td><td>10.7.21.182 / 10.7.2.116</td><td>Primary DNS (dnsmasq, :53), Backend A (:3001), test client; Phase 2: standby nginx (:8443)</td></tr>
+<tr><td>Mac 2 (Tanisha)</td><td>10.7.21.206 / 10.7.19.91</td><td>nginx edge (HTTPS :8443), Backend B (:3002); Phase 2: backup DNS (:53)</td></tr>
+</table>
+</div>
+
+
+<h3>A. Path of One Request</h3>
+<ol>
+<li>The client asks DNS for <code>app.team1.test</code> over UDP port 53 and gets the edge address.</li>
+<li>The client opens a TCP connection to the edge on port 8443.</li>
+<li>TLS starts. The Client Hello carries the name (SNI) and offers HTTP/2 (ALPN). nginx shows its certificate.</li>
+<li>nginx decrypts the request and forwards it over plain HTTP to Backend A or B.</li>
+<li>The backend answers with JSON and the header <code>X-Backend</code>; nginx returns it over TLS.</li>
+</ol>
+
+<div class="tblock">
+<div class="tcap"><span class="num">TABLE II</span>Protocols by Layer</div>
+<table>
+<tr><th>Layer</th><th>Use in our system</th></tr>
+<tr><td>Application</td><td>DNS (dnsmasq); HTTP/2 client to nginx; HTTP/1.1 nginx to backends</td></tr>
+<tr><td>Security</td><td>TLS 1.3, self-signed certificate for <code>app/api.team1.test</code></td></tr>
+<tr><td>Transport</td><td>UDP 53 (DNS); TCP 8443, 3001, 3002</td></tr>
+<tr><td>Network</td><td>IPv4 on one /19 subnet; pf firewall (Phase 2)</td></tr>
+<tr><td>Link</td><td>Wi-Fi (<code>en0</code>); ARP</td></tr>
+</table>
+</div>
+
+
+<h2>III. Phase 1: Building the Service</h2>
+
+<h3>A. Private DNS and Connectivity (A1–A5)</h3>
+<p>dnsmasq on Mac 1 answered for <code>app.team1.test</code> and <code>api.team1.test</code> with the edge address, and forwarded all other names to 1.1.1.1 and 8.8.8.8. Both names point to the edge, not to a backend, so every request enters through the proxy. A local query returned <code>NOERROR</code> with the authoritative flag set. The same name sent to Google DNS (8.8.8.8) returned <code>NXDOMAIN</code>, which proves the name exists only in our private DNS. Ping worked in both directions with 0% loss (average 109.5 ms and 126.7 ms on the busy campus Wi-Fi).</p>
+<p>One test failed: Mac 2 could not query the DNS server on Mac 1 (A3). The university-managed firewall drops incoming traffic to port 53 on Mac 1, and only the IT team can change it. We reported this honestly as a limitation and solved it in Phase 2 (Section V).</p>
+
+<h3>B. HTTPS and the nginx Reverse Proxy (B1, B3)</h3>
+<p>Both backends are small Express (TypeScript) servers. Each one adds the header <code>X-Backend: A</code> or <code>B</code>, so we can see which one answered. nginx on Mac 2 listens with TLS on port 8443, holds an <code>upstream</code> group with both backends, and forwards every path with <code>proxy_pass</code>. It also adds the <code>Host</code>, <code>X-Real-IP</code>, <code>X-Forwarded-For</code> and <code>X-Forwarded-Proto</code> headers, because TLS ends at nginx.</p>
+<p>We tested HTTPS with <code>curl -v</code> and never used <code>-k</code>, so certificate checking stayed on. The result was TLS 1.3 with the cipher CHACHA20-POLY1305, a certificate for <code>CN=app.team1.test</code> whose name matched, “SSL certificate verify ok”, and HTTP 200.</p>
+
+<h3>C. Load Balancing (B2)</h3>
+<p>Six requests in a row were answered A, B, A, B, A, B (Fig. 2). nginx uses round-robin by default, so one name reaches both machines. Capacity and availability are decided at nginx, and the client does not see it.</p>
+<figure>
+<img src="figs/fig-lb.png" style="width:72%">
+<figcaption>Fig. 2. Load balancing: six HTTPS requests to <code>app.team1.test:8443</code>, all 200, served alternately by Backend A and B.</figcaption>
+</figure>
+
+<h3>D. HTTP Caching (D1, D2)</h3>
+<p>The endpoint <code>/api/cache</code> sends <code>Cache-Control: max-age=60</code> and <code>ETag: "cache-v1"</code>. For 60 seconds a client may reuse its copy without asking the server. After that, it sends the ETag back in <code>If-None-Match</code>. If nothing changed, the server answers <code>304 Not Modified</code> with headers only and no body (Fig. 3). The first answer came from Backend A and the 304 from Backend B; both use the same ETag, so this works with load balancing.</p>
+<figure>
+<img src="figs/fig-304.png" style="width:72%">
+<figcaption>Fig. 3. Conditional request with <code>If-None-Match</code>: the server returns 304 Not Modified with the same ETag and no body.</figcaption>
+</figure>
+
+<h3>E. Failure and Recovery (D3)</h3>
+<p>We stopped Backend A. All six next requests still returned 200, from Backend B. The nginx error log showed <code>connect() failed (61: Connection refused)</code> for Backend A: nginx tried A, was refused, and passed the request to B. After we restarted A, it joined the rotation again without any change to nginx.</p>
+
+<h2>IV. Phase 1 Packet Analysis</h2>
+<p>We captured three layers in Wireshark. DNS was captured on the loopback interface of Mac 1, because the client and dnsmasq ran on the same machine; the answer came in 281 µs. TCP was captured on Mac 2 with the filter <code>tcp.port == 8443</code> and showed the three-way handshake SYN, SYN-ACK, ACK from client port 53258 [4].</p>
+<p>TLS 1.3 encrypts the server certificate, so it cannot be seen in a normal capture [6]. To show it, we repeated the request with TLS 1.2 forced (<code>curl --tlsv1.2 --tls-max 1.2</code>). Wireshark then showed the Certificate message (type 11), 834 bytes, with <code>app.team1.test</code> in its bytes. In the normal TLS 1.3 session, everything after the Server Hello was “Application Data”, which proves the HTTP request and response were encrypted.</p>
+
+<h2>V. Phase 2: Changes from Phase 1</h2>
+<p>Before adding new features, we fixed the problems that Phase 1 left (Table III).</p>
+
+<div class="tblock">
+<div class="tcap"><span class="num">TABLE III</span>Phase 1 Problems and Phase 2 Fixes</div>
+<table>
+<tr><th>Problem in Phase 1</th><th>Fix in Phase 2</th></tr>
+<tr><td><code>address=</code> in dnsmasq always sends TTL 0</td><td><code>host-record=name,ip,30</code> and <code>local-ttl=30</code></td></tr>
+<tr><td>Old <code>/etc/hosts</code> lines gave two A records</td><td>Lines removed; <code>no-hosts</code> added</td></tr>
+<tr><td>Cross-machine DNS (A3) blocked on Mac 1</td><td>Backup DNS on Mac 2; Mac 1 queries Mac 2</td></tr>
+<tr><td>No health-check settings in nginx</td><td><code>max_fails=1 fail_timeout=10s</code>, <code>proxy_next_upstream</code></td></tr>
+<tr><td>Backend B code missing from the repo</td><td>Restored; files grouped per machine and phase</td></tr>
+<tr><td>IPs changed on the new network</td><td>All Phase 2 configs updated</td></tr>
+</table>
+</div>
+
+<p>Cross-machine DNS now works: from Mac 1, <code>dig @10.7.19.91 app.team1.test</code> returns <code>NOERROR</code>, the answer <code>10.7.19.91</code> with TTL 30, and <code>SERVER: 10.7.19.91#53</code>. We also added a <code>.gitignore</code> so the TLS private key is never pushed to GitHub.</p>
+
+<h2>VI. Phase 2: Fault-Tolerance Extensions</h2>
+<p>All six extensions worked (Table IV). For each one we set it up, broke something on purpose, and saved the result.</p>
+
+<div class="tblock">
+<div class="tcap"><span class="num">TABLE IV</span>Phase 2 Extension Results</div>
+<table>
+<tr><th>Ext.</th><th>Test</th><th>Result</th></tr>
+<tr><td>A</td><td>Stop primary DNS</td><td>Names resolve via Mac 2; site 200</td></tr>
+<tr><td>B</td><td>Change DNS record</td><td>Old answer until 17:43:24; flush skips wait</td></tr>
+<tr><td>C</td><td>Reach a backend directly</td><td>Times out; edge path still works</td></tr>
+<tr><td>D</td><td>Kill Backend A</td><td>8 of 8 requests 200 via B</td></tr>
+<tr><td>E</td><td>Point DNS at Mac 1</td><td>Traffic moves to <code>mac1-standby</code></td></tr>
+<tr><td>F</td><td>Real fault in backup DNS</td><td>Wrong <code>listen-address</code> found, fixed</td></tr>
+</table>
+</div>
+
+<h3>A. Backup DNS Resolver</h3>
+<p>Mac 2 runs a second dnsmasq with the same records. Mac 1 uses <code>127.0.0.1</code> first and <code>10.7.19.91</code> second. When we stopped the primary, <code>dig @127.0.0.1</code> gave “connection refused”, but normal lookups still returned the edge address and the site still returned HTTP/2 200. A client simply tries the next server in its list, so a second DNS server removes a single point of failure.</p>
+
+<h3>B. TTL and DNS Caching</h3>
+<p>Every record now has a TTL of 30 s [8]. A loop on Mac 1 printed the <code>X-Edge</code> header every 3 s while we changed the record to Mac 1. The client kept the old, cached answer until 17:43:24, then switched to the standby (Fig. 4). When we changed it back, we flushed the macOS cache and the client switched at once, at 17:44:01. TTL is the longest time a change can take to reach a client: a short TTL means fast changes but more DNS queries.</p>
+<figure>
+<img src="figs/fig-ttl.png" style="width:62%">
+<figcaption>Fig. 4. DNS cutover seen from the client. The cached answer is used until 17:43:24, then the standby edge answers. After the revert and a cache flush, the main edge returns at 17:44:01.</figcaption>
+</figure>
+
+<h3>C. Service Isolation with a Firewall</h3>
+<p>We used the macOS packet filter (pf) with our own anchor <code>com.apple/team1</code>, so system rules were never changed. Mac 2 blocks port 3002 on <code>en0</code>; Mac 1 allows port 3001 only from the edge (10.7.19.91) and blocks everyone else. From Mac 1, a direct connection to port 3002 timed out, but the site through the edge still worked. The rule counters showed 3 packets blocked on Mac 2, and 30 packets passed and 0 blocked on Mac 1. After rollback, the direct connection worked again. A firewall drop causes a timeout, not “connection refused”. nginx reaches Backend B through <code>127.0.0.1</code>, which does not use <code>en0</code>, so the rule does not affect it.</p>
+
+<h3>D. High-Availability Failover</h3>
+<p>Each backend is listed with <code>max_fails=1 fail_timeout=10s</code>, and <code>proxy_next_upstream</code> retries a failed request on the other backend (at most 2 tries) [9]. When we stopped Backend A, 8 of 8 requests returned 200 from B, and the error log had only one “Connection refused” line. These are passive health checks: nginx marks a backend as down after one real request fails, and skips it for 10 s.</p>
+
+<h3>E. DNS-Based Edge Cutover</h3>
+<p>A standby nginx on Mac 1 uses the same certificate and the same backends, and adds <code>X-Edge: mac1-standby</code>. We first tested it directly with <code>curl --resolve</code> (HTTP/2 200, A and B balanced), then moved users to it by changing one DNS record on both DNS servers (Fig. 4). The same certificate works on both edges because it is bound to the name, not to the IP address.</p>
+
+<h3>F. Layer-by-Layer Troubleshooting</h3>
+<p>During testing, <code>dig @10.7.19.91</code> timed out. We checked one layer at a time: <code>ping</code> worked, so the network was fine; dnsmasq was not running; its config held Mac 1's <code>listen-address</code>, and with <code>bind-interfaces</code> dnsmasq cannot listen on an IP it does not own. Restoring the correct file fixed it. Our method is: <code>ping</code> → <code>dig</code> → <code>nc -vz</code> → <code>openssl s_client</code> → <code>curl -v</code> → logs.</p>
+
+<h2>VII. Failure Scenarios</h2>
+<p>We broke the system in four ways (Table V). Each failure gives a different symptom, and the symptom points to the broken layer.</p>
+
+<div class="tblock">
+<div class="tcap"><span class="num">TABLE V</span>Failure Scenarios and Symptoms</div>
+<table>
+<tr><th>Failure</th><th>What the client saw</th><th>Layer</th></tr>
+<tr><td>Wrong DNS record (10.7.19.99)</td><td>Wrong IP; <code>curl</code> timed out after 5 s</td><td>DNS data</td></tr>
+<tr><td>Wrong DNS server (8.8.8.8 only)</td><td>No answer for <code>team1.test</code></td><td>DNS server</td></tr>
+<tr><td>Both backends down</td><td>HTTP/2 502 from the edge</td><td>Application</td></tr>
+<tr><td>Wrong port (9443)</td><td>Ping works; “Connection refused”</td><td>Transport</td></tr>
+</table>
+</div>
+
+<p><i>Timed out</i> means no reply: no host has that IP, or a firewall dropped the packet. <i>Connection refused</i> means the host is there but nothing listens on that port; it sends back a TCP reset. <i>502 Bad Gateway</i> means TLS and nginx work but no backend answered (Fig. 5). The edge log showed one request trying both backends: first <code>127.0.0.1:3002</code>, then <code>10.7.2.116:3001</code>, both refused.</p>
+<figure>
+<img src="figs/fig-502.png" style="width:92%">
+<figcaption>Fig. 5. With Backend A running the site returns 200; with both backends stopped, the edge returns 502.</figcaption>
+</figure>
+
+<h2>VIII. Phase 2 Packet Analysis</h2>
+<p>A capture on Mac 2 shows a full request from Mac 1: DNS, TCP, TLS 1.3 and encrypted HTTP/2 [7], [10]. We saved only the 85 team packets (filter <code>ip.addr==10.7.2.116 &amp;&amp; (dns.qry.name contains "team1" || tcp.port==8443)</code>), so no other users' traffic is stored.</p>
+
+<div class="tblock">
+<div class="tcap"><span class="num">TABLE VI</span>One Request in the Phase 2 Capture</div>
+<table>
+<tr><th>Step</th><th>What we see</th></tr>
+<tr><td>DNS</td><td><code>A app.team1.test</code> → 10.7.19.91, TTL 30, about 5 ms [3]</td></tr>
+<tr><td>TCP</td><td>SYN → SYN, ACK → ACK; MSS 1460, window scale 64</td></tr>
+<tr><td>TLS start</td><td>Client Hello, SNI <code>app.team1.test</code>, ALPN <code>h2</code>, <code>http/1.1</code></td></tr>
+<tr><td>TLS reply</td><td>Server Hello, TLS 1.3, <code>TLS_CHACHA20_POLY1305_SHA256</code></td></tr>
+<tr><td>Data</td><td>Only “Application Data” records</td></tr>
+<tr><td>Close</td><td>FIN, ACK from both sides at once</td></tr>
+</table>
+</div>
+
+<p>Each <code>curl</code> received a new ephemeral client port (57337, 57338, 57339), while the server port stayed 8443, so each connection is a different socket pair. Wireshark shows <code>Seq=0</code>, but this is relative; the real first number is random. MSS 1460 is the 1500-byte frame minus 20 bytes of IP and 20 bytes of TCP header. The flags <code>SYN, ECE, CWR</code> mean the client offered ECN [5].</p>
+<p>The Client Hello says “TLS 1.2 (0x0303)” for compatibility with old devices; the real version is chosen in the <code>supported_versions</code> extension, and the Server Hello picks TLS 1.3 (Fig. 6). The name (SNI) and the HTTP version (ALPN) are sent in clear text, which is how nginx picks the right certificate.</p>
+<figure>
+<img src="figs/fig-clienthello.png" style="width:92%">
+<figcaption>Fig. 6. Client Hello in Wireshark: <code>server_name=app.team1.test</code>, <code>supported_versions</code> with TLS 1.3, and ALPN offering <code>h2</code> and <code>http/1.1</code>.</figcaption>
+</figure>
+
+<h2>IX. Security and Limitations</h2>
+<ol>
+<li><b>Port 53 on Mac 1.</b> The campus firewall still blocks incoming DNS on Mac 1. Mac 2 waits 2 s for Mac 1, then uses its own backup. All client tests run from Mac 1.</li>
+<li><b>Manual edge failover.</b> Moving users to the standby needs a person to change DNS, then up to one TTL (30 s). A real system would use health checks or a floating IP.</li>
+<li><b>Passive health checks.</b> nginx notices a dead backend only after a real request fails; that request is retried, so users see no error.</li>
+<li><b>Internal traffic.</b> nginx talks to the backends over plain HTTP on the LAN. In Phase 2 the pf rules stop other machines from reaching the backends directly.</li>
+<li><b>Local trust.</b> The certificate is self-signed, so each client must trust it by hand. The private key is never stored in the repository.</li>
+<li><b>One network.</b> Both Macs share one Wi-Fi, so a Wi-Fi outage stops everything.</li>
+</ol>
+<p>In the cloud these roles map to managed services: DNS with health checks, a load balancer with active health checks, security groups instead of pf, and a certificate from a public authority.</p>
+
+<h2>X. Conclusion</h2>
+<p>Phase 1 built a private web service on two real Macs and proved each layer: private DNS, HTTPS with a verified certificate, load balancing, HTTP caching and packet captures. Phase 2 made it survive failures: a stopped DNS server, a stopped backend and a moved edge all left the site working, and only the loss of both backends gave an error, a clear 502. The main lessons are simple. Every role needs a copy on another machine. TTL decides how fast a change reaches users. A firewall drop looks like a timeout, while a closed port looks like “connection refused”. When something breaks, check one layer at a time.</p>
+
+<h2>References</h2>
+<div class="refs">
+<p><span>[1]</span>Computer Networks Course, “CN Project Document (Phase 1 and Phase 2),” Newton School of Technology, Rishihood University, 2026.</p>
+<p><span>[2]</span>M. Agarwal and T. Dhiman, “CN_Project_Elite,” GitHub repository, 2026. [Online]. Available: https://github.com/Aggarwalmansi/CN_Project_Elite</p>
+<p><span>[3]</span>P. Mockapetris, “Domain names—Implementation and specification,” RFC 1035, IETF, Nov. 1987.</p>
+<p><span>[4]</span>W. Eddy, Ed., “Transmission Control Protocol (TCP),” RFC 9293, IETF, Aug. 2022.</p>
+<p><span>[5]</span>K. Ramakrishnan, S. Floyd, and D. Black, “The addition of Explicit Congestion Notification (ECN) to IP,” RFC 3168, IETF, Sep. 2001.</p>
+<p><span>[6]</span>E. Rescorla, “The Transport Layer Security (TLS) protocol version 1.3,” RFC 8446, IETF, Aug. 2018.</p>
+<p><span>[7]</span>M. Thomson and C. Benfield, Eds., “HTTP/2,” RFC 9113, IETF, Jun. 2022.</p>
+<p><span>[8]</span>S. Kelley, “dnsmasq manual page.” [Online]. Available: https://thekelleys.org.uk/dnsmasq/docs/dnsmasq-man.html</p>
+<p><span>[9]</span>nginx, “Module ngx_http_upstream_module.” [Online]. Available: https://nginx.org/en/docs/http/ngx_http_upstream_module.html</p>
+<p><span>[10]</span>Wireshark Foundation, “Wireshark User’s Guide.” [Online]. Available: https://www.wireshark.org/docs/</p>
+</div>
+
+</div>
+</body>
+</html>
